@@ -6,7 +6,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env.dev') });
 async function interagirAvecAssistant(contenu) {
   try {
 
-    logger.info(`TEst in IA function ${process.env.API_KEY} `);
+    console.log(`TEst in IA function ${process.env.API_KEY} `);
     
     // 1. Initialiser le client OpenAI avec votre clé API
     const client = new OpenAI({

@@ -1,147 +1,137 @@
-const express = require('express');
-const helmet = require('helmet');
-const timeout = require('express-timeout-handler');
-const mongoose = require('mongoose');
-const http = require('http');
-const cors = require('cors');
-const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '../.env.dev') });
-const { initializeMetrics, metricsRouter, metricsMiddleware } = require('./utils/metrics');
+const express = require("express")
+const helmet = require("helmet")
+const timeout = require("express-timeout-handler")
+const cors = require("cors")
+const path = require("path")
+require("dotenv").config({ path: path.resolve(__dirname, "../.env.dev") })
 
+// Import des dépendances internes
+const routes = require("./routes")
+const { initializeMetrics, metricsRouter, metricsMiddleware } = require("./utils/metrics")
+const logger = require("./utils/logger")
 
-const logger = require('./utils/logger.js');
-const router = require('./routes/index.js');
-const { connectAndLoadModels } = require('./models/index.js');
+// Configuration initiale
+const app = express()
+const SERVICE_NAME = "ia-service"
+const PORT = process.env.PORT
 
-const app = express();
-const port = 8001;
+// 1. Middlewares de sécurité
+app.use(helmet())
+app.use(
+  cors({
+    origin: process.env.ALLOWED_ORIGINS?.split(",") || "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true
+  })
+)
 
-// Set up the HTTP server explicitly
-const server = http.createServer(app);
+// 2. Middlewares de base
+app.use(express.json({ limit: "10mb" }))
+app.use(express.urlencoded({ extended: true }))
 
-// Middleware
-app.use(helmet());
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// 3. Métriques
+initializeMetrics()
+app.use(metricsMiddleware)
+app.use(metricsRouter)
 
-// 🔧 INITIALISATION DES MÉTRIQUES (OBLIGATOIRE)
-initializeMetrics('authentification');
+// 4. Routes principales
+app.use("/api", routes)
 
-// 📊 MIDDLEWARE MÉTRIQUES (avant les autres middlewares)
-app.use(metricsMiddleware);
+// 5. Health Check et Ready Check
+app.get("/health", (req, res) => {
+  res.json({
+    status: "UP",
+    service: SERVICE_NAME,
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memoryUsage: process.memoryUsage()
+  })
+})
 
-// 🛣️ ROUTES MÉTRIQUES
-app.use(metricsRouter);
+app.get("/ready", (req, res) => {
+  // Ajouter ici des vérifications spécifiques au service IA
+  // (ex: connexion aux modèles, GPU disponible, etc.)
+  res.status(200).json({ ready: true })
+})
 
-// Gestion d'erreur globale avec métriques
+// 6. Gestion des timeouts (augmenté pour les opérations IA)
+app.use(
+  timeout.handler({
+    timeout: 30000, // Timeout plus long pour les requêtes IA
+    onTimeout: (res) => {
+      res.status(503).json({ 
+        error: "Traitement IA trop long",
+        suggestion: "Réessayez avec moins de données ou contactez le support"
+      })
+    },
+    disable: ["write", "setHeaders"],
+  })
+)
+
+// 7. Gestion des erreurs standardisée
 app.use((err, req, res, next) => {
-  const { recordError } = require('./utils/metrics');
-  recordError('unhandled_error', err);
-  res.status(500).json({ error: 'Internal Server Error' });
-});
+  const { recordError } = require("./utils/metrics")
+  recordError("unhandled_error", err)
+  
+  logger.error(`[${SERVICE_NAME}] Error:`, {
+    error: err.message,
+    stack: err.stack,
+    path: req.path,
+    method: req.method,
+    body: req.body
+  })
 
-// CSRF error handler
-app.use((err, req, res, next) => {
-  if (err.code === 'EBADCSRFTOKEN') {
-    return res.status(403).json({ message: 'Token CSRF invalide ou manquant.' });
-  }
-  next(err);
-});
-
-// Routes
-app.use('/api', router);
-
-// Global error handler
-app.use((err, req, res, next) => {
-  if (err.code === 'ETIMEDOUT') {
-    return res.status(504).json({ error: 'Timeout serveur, veuillez réessayer plus tard.' });
-  }
-  logger.error(err);
-  res.status(500).json({ error: 'Erreur interne du serveur' });
-});
-
-// Database retry connection
-async function connectWithRetry() {
-  const pRetry = (await import('p-retry')).default;
-  return pRetry(
-    () =>
-      mongoose.connect(process.env.MONGO_URI, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-        connectTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-      }),
-    {
-      retries: 3,
-      onFailedAttempt: (error) => {
-        logger.info(`Tentative ${error.attemptNumber} échouée. Erreur: ${error.message}`);
-      },
+  // Format standard pour les erreurs
+  const errorResponse = {
+    error: {
+      type: err.name || "InternalServerError",
+      message: err.message || "Internal Server Error",
+      service: SERVICE_NAME,
+      timestamp: new Date().toISOString()
     }
-  );
+  }
+
+  // Ajouter des détails supplémentaires pour les erreurs spécifiques
+  if (err.type === 'API_ERROR') {
+    errorResponse.error.details = err.details
+  }
+
+  res.status(err.status || 500).json(errorResponse)
+})
+
+// 8. Démarrage du serveur
+const server = app.listen(PORT, () => {
+  logger.info(`🚀 ${SERVICE_NAME} démarré sur le port ${PORT}`)
+  logger.info(`📊 Métriques disponibles sur /metrics`)
+  logger.info(`🩺 Health check sur /health`)
+})
+
+// 9. Graceful shutdown amélioré
+const shutdown = async (signal) => {
+  logger.info(`Reçu ${signal}, fermeture du serveur...`)
+  
+  try {
+    server.close(() => {
+      logger.info("Serveur HTTP fermé")
+      process.exit(0)
+    })
+
+    // Fermer les connexions spécifiques au service IA si nécessaire
+    // (ex: connexions aux APIs de modèles IA)
+
+    setTimeout(() => {
+      logger.error("Forçant la fermeture après timeout")
+      process.exit(1)
+    }, 10000)
+
+  } catch (error) {
+    logger.error("Erreur lors de l'arrêt:", error)
+    process.exit(1)
+  }
 }
 
-// Initialize application
-// const initializeApp = async () => {
-//   try {
-//     await connectAndLoadModels();
-//     mongoose.set('debug', true);
-//     logger.info('Application initialisée avec succès');
-//   } catch (error) {
-//     logger.error('Initialization failed:', error);
-//     process.exit(1);
-//   }
-// };
-const initializeApp = async () => {
-  try {
-    mongoose.set('strictQuery', false); // Prepare for Mongoose 7
-    
-    const db = await connectAndLoadModels();
-    app.locals.db = db;
-    
-    // Verify connection
-    await mongoose.connection.db.admin().ping();
-    logger.info('MongoDB ping successful');
-    
-    logger.info('Application initialized successfully');
-  } catch (error) {
-    logger.error('Initialization failed:', error);
-    
-    // Detailed error logging
-    if (error.name === 'MongoServerSelectionError') {
-      logger.error('Cannot connect to MongoDB server. Check:');
-      logger.error('- Is MongoDB running?');
-      logger.error('- Is the connection string correct?');
-      logger.error('- Are network/firewall settings blocking the connection?');
-    }
-    
-    process.exit(1);
-  }
-};
+process.on("SIGINT", () => shutdown("SIGINT"))
+process.on("SIGTERM", () => shutdown("SIGTERM"))
 
-// Start server
-const startServer = async () => {
-  await initializeApp();
-
-  server.listen(port, () => {
-    logger.info(`Server running at http://localhost:${port}`);
-  });
-};
-
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  try {
-    await mongoose.connection.close();
-    logger.info('MongoDB connection closed');
-    process.exit(0);
-  } catch (error) {
-    logger.error('Error during shutdown:', error);
-    process.exit(1);
-  }
-});
-
-startServer();
+module.exports = app

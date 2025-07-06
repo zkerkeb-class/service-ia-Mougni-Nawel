@@ -1,71 +1,93 @@
-// controllers/analyze.controller.js
-const { default: mongoose } = require('mongoose');
-const { analyzeService } = require('../services/contract.service');
-const logger = require('../utils/logger');
-const User = require('../models/user')(mongoose);
-const axios = require('axios');
+const analysisService = require("../services/contract.service")
 
 const analyzeContract = async (req, res) => {
   try {
-    // Get the authenticated user
-    const token = req.headers.authorization;
-    console.log('tests 2 : ', token);
+    const { contractId } = req.params
+    const token = req.headers.authorization
 
     if (!token) {
-      return res.status(401).json({ message: "No auth token provided" });
+      return res.status(401).json({
+        success: false,
+        message: "Token requis",
+      })
     }
 
-    // ✅ Fetch user info from auth microservice
-    const response = await axios.get(`${process.env.API_AUTH}/api/auth/me`, {
-      headers: {
-        Authorization: token // Forward the same token
-      }
-    });
-
-    const user = await User.findById(response.data._id);
-    console.log('tests 2 : ', user);
-
-    if (!user) {
-      logger.warn('User not found during analysis');
-      return res.status(404).json({ message: 'Utilisateur non trouvé' });
-    }
-
-    // Check free user limits
-    if (user.typeAbonnement === 'free') {
-      if (user.analysisCount >= 3) {
-        logger.warn(`Free user ${user._id} exceeded analysis limit`);
-        return res.status(402).json({ 
-          message: 'Limite d\'analyses atteinte. Passez à Premium pour continuer.',
-          upgradeUrl: '/subscription'
-        });
-      }
-    }
-
-    const { contractId } = req.params;
     if (!contractId) {
-      logger.warn('No contract ID found in request');
-      return res.status(400).json({ message: 'Aucun id de contract n\'a été trouvé.' });
+      return res.status(400).json({
+        success: false,
+        message: "ID contrat requis",
+      })
     }
 
-    const contractAnalyzedByIA = await analyzeService(contractId);
-
-    // Increment analysis count for free users
-    if (user.typeAbonnement === 'free') {
-      await User.findByIdAndUpdate(user._id, {
-        $inc: { analysisCount: 1 }
-      });
+    // Vérifier l'utilisateur
+    const authData = await analysisService.verifyUser(token)
+    if (!authData.success) {
+      return res.status(401).json({
+        success: false,
+        message: "Utilisateur non authentifié",
+      })
     }
 
-    logger.info(`Contract ${contractId} analyzed successfully`);
-    return res.status(200).json({ 
-      message: `Contract ${contractId} analysé avec succès.`, 
-      contractAnalyzedByIA,
-      remaining: user.typeAbonnement === 'free' ? 3 - (user.analysisCount + 1) : 'unlimited'
-    });
+    const user = authData.data
+
+    // Vérifier les limites pour les utilisateurs gratuits
+    try {
+      analysisService.checkFreeUserLimit(user)
+    } catch (error) {
+      return res.status(error.status).json({
+        success: false,
+        message: error.message,
+        upgradeUrl: error.upgradeUrl,
+      })
+    }
+
+    // Récupérer le contrat
+    const contractResponse = await analysisService.getContractInfo(contractId)
+    if (!contractResponse.success) {
+      return res.status(404).json({
+        success: false,
+        message: "Contrat non trouvé",
+      })
+    }
+
+    const contract = contractResponse.data
+
+    // Analyser le contrat avec l'IA
+    const analysisResult = await analysisService.performAIAnalysis(contract.content)
+
+    // Sauvegarder l'analyse
+    await analysisService.saveAnalysis(contractId, analysisResult, token)
+
+    // Incrémenter le compteur pour les utilisateurs gratuits
+    if (user.typeAbonnement === "free") {
+      await analysisService.incrementUserAnalysisCount(user._id, token)
+    }
+
+    res.json({
+      success: true,
+      data: {
+        contractId,
+        analysis: analysisResult,
+        remaining: user.typeAbonnement === "free" ? Math.max(0, 3 - (user.analysisCount + 1)) : "unlimited",
+      },
+    })
   } catch (error) {
-    logger.error('Analysis error:', error.stack);
-    res.status(500).json({ message: 'Erreur interne serveur' });
-  }
-};
+    console.error("Erreur analyse:", error)
 
-module.exports = { analyzeContract };
+    if (error.response) {
+      return res.status(error.response.status || 500).json({
+        success: false,
+        message: (error.response.data && error.response.data.message) || "Erreur service",
+      })
+    }
+
+    res.status(500).json({
+      success: false,
+      message: error.message || "Erreur interne serveur",
+    })
+  }
+}
+
+module.exports = {
+  analyzeContract,
+}
