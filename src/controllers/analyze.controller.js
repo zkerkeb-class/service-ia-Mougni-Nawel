@@ -1,4 +1,5 @@
-const analysisService = require("../services/contract.service")
+const AnalysisService = require("../services/contract.service")
+const analysisService = new AnalysisService();
 
 const analyzeContract = async (req, res) => {
   try {
