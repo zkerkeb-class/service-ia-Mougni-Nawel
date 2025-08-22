@@ -98,4 +98,4 @@ class AnalysisService {
   }
 }
 
-module.exports = new AnalysisService()
+module.exports = AnalysisService;
