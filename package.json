@@ -4,9 +4,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "dotenv -e .env.dev jest",
-    "test:watch": "dotenv -e .env.dev jest --watch",
-    "test:coverage": "dotenv -e .env.dev jest --coverage",
+    "test": "dotenv --env .env.dev jest",
+    "test:watch": "dotenv --env .env.dev jest --watch",
+    "test:coverage": "dotenv --env .env.dev jest --coverage",
     "dev": "nodemon src/index"
   },
   "author": "",
@@ -33,5 +33,8 @@
     "prom-client": "^15.1.3",
     "supertest": "^7.1.4",
     "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^10.0.0"
   }
 }
