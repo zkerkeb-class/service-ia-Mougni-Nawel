@@ -9,7 +9,6 @@ dotenv.config();
 const app = express();
 const port = 8000;
 
-// Database connection function
 const connectDB = async () => {
   try {
     await mongoose.connect(config.uri, {
@@ -23,10 +22,8 @@ const connectDB = async () => {
   }
 };
 
-// Application initialization function
 const initializeApp = async () => {
   try {
-    // Step 1: Connect to the database
     await connectDB();
 
     logger.info('Application initialized successfully');
@@ -41,7 +38,6 @@ app.use(express.json());
 const startServer = () => {
   initializeApp();
 
-  // Start Express server
   app.listen(port, () => {
     logger.info(`Server running at http://localhost:${port}`);
   });
